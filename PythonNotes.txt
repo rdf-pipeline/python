@@ -1,6 +1,21 @@
 Misc notes collected during python development
 ==============================================
 
+5/23/21:
+This page says I need to run a setup for wheel:
+https://stackoverflow.com/questions/34819221/why-is-python-setup-py-saying-invalid-command-bdist-wheel-on-travis-ci
+
+pip install wheel
+python setup.py bdist_wheel 
+
+But that command gave this error:
+python: can't open file 'setup.py': [Errno 2] No such file or directory
+Not sure that it's needed though.  pip install wheel might be enough.
+
+
+----------------------------------------------------------
+
+OLD NOTES:
 Reading chunked transfer encoding:
 https://www.nytimes.com/2021/04/03/us/politics/denver-riggleman-republican-disinformation.html?action=click&module=Well&pgtype=Homepage&section=Politics
 

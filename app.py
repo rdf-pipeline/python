@@ -22,51 +22,74 @@ import functools
 from urllib.parse import urlparse, urlunparse
 from url_normalize import url_normalize
 import re
+import netifaces
 
-# Get the current working directory
-script_dirname = os.getcwd()
+#######################################################################
+###################### Functions start here ###########################
+#######################################################################
 
-######################### Python Helpers ########################
+######################### die ########################
+# Replacement for perl's die
 def die(error_message):
     raise Exception(error_message)
 
-isLocal = {}        # Cache for IsCurrentWebServer
-localIp = None      # IP address of this host
+################ LocalIps #################
+# Return all the IPs by which this host is locally known.
+# Results are cached for fast repeated lookup.
+# Works for all my known local hostnames or IP addresses, e.g.,
+# 127.0.0.1 192.168.90.152 10.8.0.54 localhost dbooth-t470p
+# This function might not be needed.
+def LocalIps():
+    if not hasattr(LocalIps, "_localIps") :
+        # https://stackoverflow.com/questions/270745/how-do-i-determine-all-of-my-ip-addresses-when-i-have-multiple-nics#answer-33946251
+        LocalIps._localIps = set([netifaces.ifaddresses(iface)[netifaces.AF_INET][0]['addr'] for iface in netifaces.interfaces() if netifaces.AF_INET in netifaces.ifaddresses(iface)])
+        # https://stackoverflow.com/questions/270745/how-do-i-determine-all-of-my-ip-addresses-when-i-have-multiple-nics#answer-16412986
+        LocalIps._localIps.update([i[4][0] for i in socket.getaddrinfo(socket.gethostname(), None)])
+    #### TODO: is there an IPv6 localhost convention that also needs to be checked?
+    #### TODO: Do I really need to check for the ^127\. pattern?
+    WarnLine("LocalIps: " + " ".join(LocalIps._localIps))
+    return(LocalIps._localIps)
 
 ################ IsCurrentWebServer #################
 # Is the given host name, which may be either a domain name or
-# an IP address, hosted on this local host machine?
-# Results are cached in a hash for fast repeated lookup.
-# TODO: I think the logic below is wrong.  It should be checking
-# whether the given host name is the web server we're currently
-# running on -- not whether it is merely on the same machine --
-# because more than one web server hosting different kinds of
-# pipeline nodes could be running on the same machine.
-# Also it should check both the IP and the port.
+# an IP address, hosted on this same web server?
+# This is used to canonicalize URIs in a pipeline definition, so
+# that we can determine whether a request made to a URI would actually
+# (recursively) go to the current web server, which we need to avoid.
+# My laptop is currently accessible by these IPs:
+# # 127.0.0.1 192.168.90.152 10.8.0.54 localhost dbooth-t470p
+# When flask is run in dev mode, it normally only responds
+# to requests made to localhost (which is 127.0.0.1),
+# whereas in production mode (run with --host=0.0.0.0) it will respond to
+# external requests, i.e., requests to any of the above IP addresses.  
+# This means that, although in dev mode flask
+# won't respond to requests made to 192.168.90.152 (for example),
+# the framework should still work, because it will canonicalize
+# that IP to localhost, recognize it as the current web server host,
+# and avoid making an HTTP request anyway.
+# However, it could cause a problem if an additional (different) web server
+# is running on a different port of that IP, and only listening
+# to that IP.
+# Results are cached for fast repeated lookup.
+@functools.lru_cache(maxsize=None)
 def IsCurrentWebServer(host):
-    global isLocal          # Cache
-    if host in isLocal :
-        return isLocal[host]
-    # Strip off the port if there is one:
-    iColon = host.find(":")
-    host = host if iColon < 0 else host[0:iColon]
-    hostName = socket.getfqdn(host)
-    if hostName in isLocal :
-        return isLocal[hostName]
-    ip = socket.gethostbyname(hostName)
-    if ip is None :
-        # Assuming non-local if we don't know:
-        isLocal[host] = False
+    try:
+        #### TODO: is there an IPv6 localhost convention that also needs to be checked?
+        ip = socket.gethostbyname(host)
+        localIps = LocalIps()
+        if ip in localIps :
+            return True
+        else: return False
+    except OSError as error:
+        # As a sanity check, make sure we can get the localhost IP.
+        # If not, re-throw the original exception because we cannot run:
+        try:
+            localhostIp = socket.gethostbyname('localhost')
+        except OSError:
+            raise error
+        # Inability to resolve a given host is non-fatal.  We consider
+        # the host non-local:
         return False
-    global localIp
-    if localIp is None :
-        # Initialize.  Determine IP of this web server host.
-        localIp = socket.gethostbyname(os.environ['SERVER_NAME'])
-        if localIp is None :
-            die(f"[ERROR] socket.gethostbyname failed to return IP for SERVER_NAME: {os.environ['SERVER_NAME']}")
-        hostIsLocal = (ip == localIp)
-        isLocal[host] = hostIsLocal
-        return hostIsLocal
 
 ################ CanonicalizeUri #################
 # Canonicalize the given URI:  If it is an absolute local http URI,
@@ -144,6 +167,10 @@ def PrintLog(msgs):
     global logFile;
     AppendFile(logFile, msgs)
 
+########## WarnLine ############
+def WarnLine(msg, level=0):
+    Warn(msg + "\n")
+
 ########## Warn ############
 # Log a warning if the current $debug >= $level for this warning.
 # This will go to the apache error log: /var/log/apache2/error.log
@@ -175,12 +202,27 @@ def Warn(msg, level=0):
     PrintLog(msg)
     if debug is None :
         sys.stderr.write("debug not defined!\n") 
+    global configLastModified
     if configLastModified is None :
         sys.stderr.write("configLastModified not defined!\n")
     # if !defined($level) || $debug >= $level;
     if level is None or debug >= level :
         sys.stderr.write(msg)
     return 1
+
+#################################################################
+####################### Global Variables ########################
+#################################################################
+
+logFile = "/tmp/rdf-pipeline-log.txt"
+timingLogFile = "/tmp/rdf-pipeline-timing.tsv"
+# unlink $logFile || die;
+
+# Get the current working directory
+script_dirname = os.getcwd()
+
+isLocal = {}        # Cache for IsCurrentWebServer
+localIp = None      # IP address of this host
 
 ######################### Node Types ########################
 # TODO: use RDF::Pipeline::ExampleHtmlNode;
@@ -207,6 +249,39 @@ debugStackDepth = 0       # Used for indenting debug messages.
 debugStackDepthOffset = len(inspect.stack(0)) + 6
 test = None     # For testing outside of apache2
 
+################### Runtime data ####################
+
+configLastModified = 0
+ontLastModified = 0
+internalsLastModified = 0
+configLastInode = 0
+ontLastInode = 0
+internalsLastInode = 0
+
+config = {}                # Maps: $s->{$p}->[v1, v2, ... vn]
+
+# Node Metadata hash maps for mapping from subject
+# to predicate to single value ($nmv), list ($nml) or hashmap ($nmh).
+#  For single-valued predicates:
+#    my $nmv = $nm->{value};
+#    my $value = $nmv->{$subject}->{$predicate};
+#  For list-valued predicates:
+#    my $nml = $nm->{list};
+#    my $listRef = $nml->{$subject}->{$predicate};
+#    my @list = @{$listRef};
+#  For hash-valued predicates:
+#    my $nmh = $nm->{hash};
+#    my $hashRef = $nmh->{$subject}->{$predicate};
+#    my $value = $hashRef->{$key};
+#  For multi-valued predicates:
+#    my $nmm = $nm->{multi};
+#    my $hashRef = $nmm->{$subject}->{$predicate};
+#      For list of unique values (for non-unique use {list} instead):
+#    my @values = keys %{$hashRef};
+#      To see if a particular value exists (each $value is mapped to 1):
+#    if ($hashRef->{$value}) ...
+nm = {}
+
 ##################  Constants for this server  ##################
 ontologyPrefix = "http://purl.org/pipeline/ont#"  # Pipeline ont prefix
 
@@ -220,6 +295,7 @@ SetEnvDefault(os.environ, 'SERVER_PORT', "5000")
 thisHost = os.environ['SERVER_NAME'] + ':' + os.environ['SERVER_PORT']
 if not IsCurrentWebServer(os.environ['SERVER_NAME']) :
    die(f"[ERROR] Non-local $SERVER_NAME: {os.environ['SERVER_NAME']}\n")
+# die("[DUMP] Non-local $SERVER_NAME: {"+os.environ['SERVER_NAME']+"}\n")
 serverName = "localhost"
 # If "localhost" is not recognized as local, then
 # at least 127.0.0.1 should be.
@@ -256,43 +332,6 @@ FILE = 'FILE'
 
 systemArgs = ['debug', 'debugStackDepth', 'callerUri', 'callerLM', 'method']
 
-################### Runtime data ####################
-
-configLastModified = 0
-ontLastModified = 0
-internalsLastModified = 0
-configLastInode = 0
-ontLastInode = 0
-internalsLastInode = 0
-
-logFile = "/tmp/rdf-pipeline-log.txt"
-timingLogFile = "/tmp/rdf-pipeline-timing.tsv"
-# unlink $logFile || die;
-
-config = {}                # Maps: $s->{$p}->[v1, v2, ... vn]
-
-# Node Metadata hash maps for mapping from subject
-# to predicate to single value ($nmv), list ($nml) or hashmap ($nmh).
-#  For single-valued predicates:
-#    my $nmv = $nm->{value};
-#    my $value = $nmv->{$subject}->{$predicate};
-#  For list-valued predicates:
-#    my $nml = $nm->{list};
-#    my $listRef = $nml->{$subject}->{$predicate};
-#    my @list = @{$listRef};
-#  For hash-valued predicates:
-#    my $nmh = $nm->{hash};
-#    my $hashRef = $nmh->{$subject}->{$predicate};
-#    my $value = $hashRef->{$key};
-#  For multi-valued predicates:
-#    my $nmm = $nm->{multi};
-#    my $hashRef = $nmm->{$subject}->{$predicate};
-#      For list of unique values (for non-unique use {list} instead):
-#    my @values = keys %{$hashRef};
-#      To see if a particular value exists (each $value is mapped to 1):
-#    if ($hashRef->{$value}) ...
-nm = {}
-
 Warn(f'Starting with debug: {debug}\n')
 Warn("********** NEW APACHE THREAD INSTANCE **********\n", DEBUG_DETAILS)
 
@@ -301,65 +340,6 @@ Warn("********** NEW APACHE THREAD INSTANCE **********\n", DEBUG_DETAILS)
 # $hasHiResTime || die;
 
 #### Command-line testing is not implemented in the python version
-
-#######################################################################
-###################### Functions start here ###########################
-#######################################################################
-
-################ LocalIps #################
-# Return all the IPs by which this host is locally known.
-# Results are cached for fast repeated lookup.
-# Works for all my known local hostnames or IP addresses, e.g.,
-# 127.0.0.1 192.168.90.152 10.8.0.54 localhost dbooth-t470p
-# This function might not be needed.
-def LocalIps():
-    global localIps         # Cache localIps
-    try:
-        ip = socket.gethostbyname(host)
-        if localIps is None :
-            # https://stackoverflow.com/questions/270745/how-do-i-determine-all-of-my-ip-addresses-when-i-have-multiple-nics#answer-33946251
-            localIps = set([netifaces.ifaddresses(iface)[netifaces.AF_INET][0]['addr'] for iface in netifaces.interfaces() if netifaces.AF_INET in netifaces.ifaddresses(iface)])
-            # https://stackoverflow.com/questions/270745/how-do-i-determine-all-of-my-ip-addresses-when-i-have-multiple-nics#answer-16412986
-            localIps.update([i[4][0] for i in socket.getaddrinfo(socket.gethostname(), None)])
-    except:
-        return False
-    #### TODO: is there an IPv6 localhost convention that also needs to be checked?
-    #### TODO: Do I really need to check for the ^127\. pattern?
-    # Warn(localIps)
-    return(localIps)
-
-################ IsCurrentWebServer #################
-# Is the given host name, which may be either a domain name or
-# an IP address, hosted on this same web server?
-# This is used to canonicalize URIs in a pipeline definition, so
-# that we can determine whether a request made to a URI would actually
-# (recursively) go to the current web server, which we need to avoid.
-# My laptop is currently accessible by these IPs:
-# # 127.0.0.1 192.168.90.152 10.8.0.54 localhost dbooth-t470p
-# When flask is run in dev mode, it normally only responds
-# to requests made to localhost (which is 127.0.0.1),
-# whereas in production mode (run with --host=0.0.0.0) it will respond to
-# external requests, i.e., requests to any of the above IP addresses.  
-# This means that, although in dev mode flask
-# won't respond to requests made to 192.168.90.152 (for example),
-# the framework should still work, because it will canonicalize
-# that IP to localhost, recognize it as the current web server host,
-# and avoid making an HTTP request anyway.
-# However, it could cause a problem if an additional (different) web server
-# is running on a different port of that IP, and only listening
-# to that IP.
-# Results are cached for fast repeated lookup.
-@functools.lru_cache(maxsize=None)
-def IsCurrentWebServer(host):
-    try:
-        #### TODO: is there an IPv6 localhost convention that also needs to be checked?
-        ip = socket.gethostbyname(host)
-        localIps = LocalIps()
-        if ip in localIps :
-            return True
-        else: return False
-    except:
-        return False
 
 strin = '''============== BEGIN COMMENT
 # **** STOPPED HERE ****
@@ -480,17 +460,16 @@ app = Flask(__name__)
 def home(): # route handler function
     # returning a response
     # return render_template('index.html', name = 'John')
-    # return render_template('index.html', name = time.ctime())
-    # return render_template('index.html', name = os.environ['SERVER_NAME'])
-    # return render_template('index.html', name = CanonicalizeUri(os.environ['SERVER_NAME']))
     bu = urlparse(request.base_url)
     host = bu.hostname
-    Warn("host: {" + host + "}")
-    Warn("IsCurrentWebServer(127.0.0.1): " + str(IsCurrentWebServer("127.0.0.1")) + "\n")
-    Warn("IsCurrentWebServer(192.168.90.152): " + str(IsCurrentWebServer("192.168.90.152")) + "\n")
-    Warn(")IsCurrentWebServer(10.8.0.54): " + str(IsCurrentWebServer("10.8.0.54")) + "\n")
-    Warn("IsCurrentWebServer(localhost): " + str(IsCurrentWebServer("localhost")) + "\n")
-    Warn("IsCurrentWebServer(dbooth-t470p): " + str(IsCurrentWebServer("dbooth-t470p")) + "\n")
+    WarnLine("host: {" + host + "}")
+    WarnLine("LocalIps: " +  " ".join(LocalIps()))
+    WarnLine("IsCurrentWebServer(127.0.0.1): " + str(IsCurrentWebServer("127.0.0.1")))
+    WarnLine("IsCurrentWebServer(192.168.90.152): " + str(IsCurrentWebServer("192.168.90.152")))
+    WarnLine("IsCurrentWebServer(10.8.0.54): " + str(IsCurrentWebServer("10.8.0.54")))
+    WarnLine("IsCurrentWebServer(localhost): " + str(IsCurrentWebServer("localhost")))
+    WarnLine("IsCurrentWebServer(dbooth-t470p): " + str(IsCurrentWebServer("dbooth-t470p")))
+    WarnLine("IsCurrentWebServer(dbooth-t470pxxx): " + str(IsCurrentWebServer("dbooth-t470pxxx")))
     return render_template('index.html', name = " ".join(systemArgs))
     # return render_template('index.html', name = reprlib.repr(thisHost))
     # return render_template('index.html', name = 'Wow')
