@@ -1,0 +1,12 @@
+Misc notes collected during python development
+==============================================
+
+Reading chunked transfer encoding:
+https://www.nytimes.com/2021/04/03/us/politics/denver-riggleman-republican-disinformation.html?action=click&module=Well&pgtype=Homepage&section=Politics
+
+Flask
+
+CherryPy -- app w built-in web server
+
+Falcon -- fast, bare-metal
+
