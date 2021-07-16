@@ -9,3 +9,7 @@ export FLASK_ENV=development
 export FLASK_DEBUG=1
 flask run
 
+# To Reimport in interactive shell:
+# import importlib
+# importlib.reload(app)
+
