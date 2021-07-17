@@ -62,9 +62,9 @@ if (SERVER_SCHEME == 'http' and SERVER_PORT == '80') or (SERVER_PORT == 'https' 
 ###################### Functions start here ###########################
 #######################################################################
 
-######################### die ########################
+######################### Die ########################
 # Replacement for perl's die
-def die(error_message):
+def Die(error_message):
     raise Exception(error_message)
 
 ################ LocalIps #################
@@ -404,17 +404,17 @@ ontologyPrefix = "http://purl.org/pipeline/ont#"  # Pipeline ont prefix
 
 # 80 and 443 are the default ports for http and https:
 if SERVER_PORT is not None and SERVER_PORT in {"80", "443"} :
-   die(f"[ERROR] SERVER_PORT={SERVER_PORT} must not be set if it is the default for the scheme, because it will mess up IsCurrentWebServer tests.\n")
+   Die(f"[ERROR] SERVER_PORT={SERVER_PORT} must not be set if it is the default for the scheme, because it will mess up IsCurrentWebServer tests.\n")
 if not IsCurrentWebServer(SERVER_NAME, SERVER_PORT) :
-   die(f"[ERROR] Non-local $SERVER_NAME:$SERVER_PORT {SERVER_NAME}:{SERVER_PORT}\n")
-# die("[DUMP] Non-local $SERVER_NAME: {"+os.environ['SERVER_NAME']+"}\n")
+   Die(f"[ERROR] Non-local $SERVER_NAME:$SERVER_PORT {SERVER_NAME}:{SERVER_PORT}\n")
+# Die("[DUMP] Non-local $SERVER_NAME: {"+os.environ['SERVER_NAME']+"}\n")
 serverName = "localhost"
 # If "localhost" is not recognized current web server, then
 # at least 127.0.0.1 should be.
 if not IsCurrentWebServer(serverName, SERVER_PORT) :
     serverName = "127.0.0.1" 
 if not IsCurrentWebServer(serverName, SERVER_PORT) :
-    die(f"[ERROR] Not recognized as local: {serverName} SERVER_PORT: {SERVER_PORT}")
+    Die(f"[ERROR] Not recognized as local: {serverName} SERVER_PORT: {SERVER_PORT}")
 # $baseUri is the URI prefix that corresponds directly to DOCUMENT_ROOT.
 # baseUri = CanonicalizeUri(f"http://127.0.0.1:{SERVER_PORT}");
 baseUri = f"{SERVER_SCHEME}://{SERVER_NAME}"
@@ -507,7 +507,7 @@ def handler(r):
             Warn(f"RDF_PIPELINE_DEV_DIR script: {script}")
             RDF_PIPELINE_DEV_DIR = os.popen(script).read()
         if not os.path.isdir(RDF_PIPELINE_DEV_DIR) :
-            die("[INTERNAL ERROR] RDF_PIPELINE_DEV_DIR is not set or not a dir: {RDF_PIPELINE_DEV_DIR}\n")
+            Die("[INTERNAL ERROR] RDF_PIPELINE_DEV_DIR is not set or not a dir: {RDF_PIPELINE_DEV_DIR}\n")
         os.environ['RDF_PIPELINE_DEV_DIR'] = RDF_PIPELINE_DEV_DIR
     # Warn(f"RDF_PIPELINE_DEV_DIR: {RDF_PIPELINE_DEV_DIR}")
 
@@ -531,7 +531,7 @@ def handler(r):
         # Warn(f"dirs: {dirs}")
         # Warn(f"toolsDir: {toolsDir}")
         if len(dirs) < 2 or not (toolsDir in PATH) :
-            die(f"[INTERNAL ERROR] PATH is not set properly: {PATH}\n")
+            Die(f"[INTERNAL ERROR] PATH is not set properly: {PATH}\n")
         os.environ['PATH'] = PATH
     # Warn(f"PATH: {PATH}")
 
@@ -692,18 +692,20 @@ if lmCounterMax < 9 :
 # The string is padded with leading zeros for easy string comparison,
 # ensuring that $a lt $b iff $a < $b.
 # An empty string "" will be returned if the time is 0.
-def FormatTime(timeNs):
+def FormatTime(timeNs, decimalPlaces=lmDecimalPlaces):
     if not timeNs or timeNs == 0 :
         return ""
     # Enough digits to work through year 2286:
-    # my $lm = sprintf("%010.6f", $time);
-    timeMs = timeNs // lmNsPerTick
-    sec, ms = divmod(timeMs, lmTicksPerSecond)
-    lm = f"{sec:0{lmSecondsWidth}}.{ms:0{lmDecimalPlaces}}"
-    # length($lm) == 10+1+6 or confess "Too many digits in time!";
-    if len(lm) != lmSecondsWidth+1+lmDecimalPlaces :
-        Die(f"FormatTime: Wrong number of digits in LM time: '{lm}'")
-    return lm
+    # my $lmt = sprintf("%010.6f", $time);
+    # Nanoseconds are 9 decimal places:
+    lmtNoDP = f"{timeNs:0{lmSecondsWidth+9}d}"
+    if decimalPlaces > lmDecimalPlaces :
+        lmtNoDP += "0" * (decimalPlaces-lmDecimalPlaces);
+    lmt = lmtNoDP[0:lmSecondsWidth]+"."+lmtNoDP[lmSecondsWidth:lmSecondsWidth+decimalPlaces]
+    # length($lmt) == 10+1+6 or confess "Too many digits in time!";
+    if len(lmt) != lmSecondsWidth+1+decimalPlaces :
+        Die(f"FormatTime: Wrong number of digits in LM time: '{lmt}'")
+    return lmt
 
 ########## FormatCounter ############
 # Format a counter for use in an LM string.
@@ -791,23 +793,24 @@ def IsExecutable(f):
 
 commentOut = '''
 ############# FileNodeRunUpdater ##############
-# Run the updater.
+# Run the updater, returning the new LM.
 # If there is no updater (i.e., static state) then we must generate
 # an LM from the state.
 def FileNodeRunUpdater(nm, thisUri, updater, state, thisInputs, thisParameters, 
         oldThisLM, callerUri, callerLM):
     Warn(f"FileNodeRunUpdater(nm, {thisUri}, {updater}, {state}, ...) called.\n", DEBUG_DETAILS)
     if not updater :
-        # TODO: Make a way to retain as many digits of MTime as possible
-        # when dealing with a static file.
-        return TimeToLM(MTime(state), -1)
-    state || die;
+        # Retain as many digits of MTime as possible
+        # when dealing with a static file, instead of using a counter
+        # at the end of the LM.
+        return FormatTime(MTime(state), lmDecimalPlaces+lmCounterWidth)
+    state || Die;
     state = NodeAbsPath(state)
     updater = &NodeAbsPath(updater);
     Warn(f"Abs state: {state}  Abs updater: {updater}\n", $DEBUG_DETAILS);
     # TODO: Move this warning to when the metadata is loaded?
     if not IsExecutable(updater) :
-        die(f"ERROR: {thisUri} updater {updater} is not executable by web server!")
+        Die(f"ERROR: {thisUri} updater {updater} is not executable by web server!")
     # The FileNode updater args are local filenames for all
     # inputs and parameters.
     **** STOPPED HERE ****
@@ -821,8 +824,8 @@ def FileNodeRunUpdater(nm, thisUri, updater, state, thisInputs, thisParameters,
     #### TODO: Move this code out of this function and pass $latestQuery
     #### as a parameter to FileNodeRunUpdater.
     #### TODO QUERY:
-    my $thisVHash = $nm->{value}->{$thisUri} || die;
-    my $parametersFile = $thisVHash->{parametersFile} || die;
+    my $thisVHash = $nm->{value}->{$thisUri} || Die;
+    my $parametersFile = $thisVHash->{parametersFile} || Die;
     my ($lm, $latestQuery, %requesterQueries) = 
         &LookupLMs($FILE, $parametersFile);
     $lm = $lm;				# Avoid unused var warning
@@ -845,14 +848,14 @@ def FileNodeRunUpdater(nm, thisUri, updater, state, thisInputs, thisParameters,
     my $stateOriginal = $nm->{value}->{$thisUri}->{stateOriginal} || "";
     &Warn("stateOriginal: $stateOriginal\n", $DEBUG_DETAILS);
     $useStdout = 1 if $updater && !$stateOriginal;
-    die "[INTERNAL ERROR] RDF_PIPELINE_DEV_DIR not set in environment! "
+    Die "[INTERNAL ERROR] RDF_PIPELINE_DEV_DIR not set in environment! "
         if !$ENV{RDF_PIPELINE_DEV_DIR};
     my $qToolsDir = quotemeta("$ENV{RDF_PIPELINE_DEV_DIR}/tools");
-    die "[INTERNAL ERROR] PATH not set properly: $ENV{PATH} "
+    Die "[INTERNAL ERROR] PATH not set properly: $ENV{PATH} "
         if $ENV{PATH} !~ m/$qToolsDir/;
     &Warn("ENV{PATH}: $ENV{PATH}\n", $DEBUG_DETAILS);
     &Warn("ENV{RDF_PIPELINE_DEV_DIR}: $ENV{RDF_PIPELINE_DEV_DIR}\n", $DEBUG_DETAILS);
-    my $qPath = quotemeta($ENV{PATH}) || die;
+    my $qPath = quotemeta($ENV{PATH}) || Die;
     my $cmd = "( cd '$nodeBasePath' ; export THIS_URI=$qThisUri ; export PATH=$qPath ; $qUpdater $qState $ipFiles > $qStderr 2>&1 )";
     $cmd =    "( cd '$nodeBasePath' ; export THIS_URI=$qThisUri ; export PATH=$qPath ; $qUpdater         $ipFiles > $qState 2> $qStderr )"
         if $useStdout;
