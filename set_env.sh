@@ -15,7 +15,7 @@
 # These will be used if the above variables are not already set:
 DEFAULT_RDF_PIPELINE_DEV_DIR=/home/dbooth/rdf-pipeline/trunk
 DEFAULT_PERL5LIB=$default_RDF_PIPELINE_DEV_DIR/RDF-Pipeline/lib
-DEFAULT_DOCUMENT_ROOT=/tmp/www
+DEFAULT_DOCUMENT_ROOT=/var/www/html
 
 # Helper function to add dirs to a PATH, leaving out redundancies
 appendPaths() { 

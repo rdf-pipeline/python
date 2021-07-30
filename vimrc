@@ -1,4 +1,4 @@
-# Usage: vim -S vimrc app.py
+" Usage: vim -S vimrc app.py
 set expandtab           " enter spaces when tab is pressed
 set tabstop=4           " use 4 spaces to represent tab
 set softtabstop=4
