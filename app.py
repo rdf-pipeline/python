@@ -73,7 +73,7 @@ SERVER_SCHEME = os.environ.get('SERVER_SCHEME', '')
 if SERVER_SCHEME not in ['http', 'https'] :
     raise ValueError(f'$SERVER_SCHEME must be "http" or "https": "{SERVER_SCHEME}"')
 # SERVER_PORT must be set as a string.
-SetEnvDefault(os.environ, 'SERVER_PORT', "5000")
+SetEnvDefault(os.environ, 'SERVER_PORT', '')
 SERVER_PORT = os.environ.get('SERVER_PORT', '')
 # Default port for http is 80; https is 443.
 if (SERVER_SCHEME == 'http' and SERVER_PORT == '80') or (SERVER_PORT == 'https' and SERVER_PORT == '443') :
@@ -128,14 +128,15 @@ def LocalIps():
 # Results are cached for fast repeated lookup.
 @functools.lru_cache(maxsize=None)
 def IsCurrentWebServer(host, port=None):
+    if host == '' : return False
     # First compare the ports.  If the ports differ then its a different
     # web server.
     # Default them to '' for easier comparison:
     p = '' if port is None else port
     sp = '' if SERVER_PORT is None else SERVER_PORT
+    # Warn(f"IsCurrentWebServer({host}, {p}) SERVER_PORT={sp} port={p}")
     if p != sp :
-        # Warn(f"IsCurrentWebServer SERVER_PORT={sp} port={p}")
-        # Warn(f"IsCurrentWebServer SERVER_PORT != port; returning False")
+        Warn(f"IsCurrentWebServer SERVER_PORT != port; returning False")
         return False
     # Now compare the hostname.  This is more complex because we need
     # to consider aliases that go to the same IP address.  We used to
@@ -217,23 +218,29 @@ def OLD_IsCurrentWebServer(host, port=None):
 # metadata based on the URI.  If the URI were a synonym, such as
 # http://127.0.0.1/node/foo instead of http://localhost/node/foo ,
 # then the metadata lookup would fail to find the metadata.
-canonicalizedUriCache = {}
+# @functools.lru_cache(maxsize=None)
 def CanonicalizeUri(oldUri):
     # Warn(f"CanonicalizeUri({oldUri})")
-    global canonicalizedUriCache
-    if oldUri in canonicalizedUriCache :
-        # Warn(f"CanonicalizeUri returning cached:({canonicalizedUriCache[oldUri]})")
-        return canonicalizedUriCache[oldUri]
-    # Pass it through url_normalize before parsing, 
-    # to get rid of any default port:
-    oldParsed = urlparse(url_normalize(oldUri))
+    # urlparse returns a hostname of None if a relative URI is given. 
+    oldParsed = urlparse(oldUri)
     host = oldParsed.hostname
+    port = oldParsed.port
+    if host :
+        # Pass it through url_normalize before reparsing,
+        # to get rid of any default port.  We had to test for non-empty
+        # host before doing this, because oldUri may be something like 'foo'
+        # or 'rdfs:subClassOf', which would be treated by url_normalize
+        # as a relative URI or an rdfs scheme.
+        oldParsed = urlparse(url_normalize(oldUri))
+        host = oldParsed.hostname
+        port = oldParsed.port
     # Convert port to string:
-    port = '' if oldParsed.port is None else str(oldParsed.port)
-    # Warn(f"CanonicalizeUri host: {host} port: {port}")
+    host = '' if host is None else host
+    port = '' if port is None else str(port)
+    # Warn(f"CanonicalizeUri({oldUri}) oldParsed: {dump(oldParsed)}")
+    Warn(f"CanonicalizeUri host: {host} port: {port}")
     if not IsCurrentWebServer(host, port) :
         # Warn(f"CanonicalizeUri not IsCurrentWS; returning oldUri: {oldUri}")
-        canonicalizedUriCache[oldUri] = oldUri
         return oldUri
     # Prefer SERVER_NAME over localhost or 127.0.0.1
     localUri = oldUri
@@ -250,9 +257,8 @@ def CanonicalizeUri(oldUri):
     if oldUri[-1] != '/' and localUri[-1] == '/' :
         # Warn(f"CanonicalizeUri removing trailing slash")
         localUri = localUri[0:-1]
-    canonicalizedUriCache[oldUri] = localUri
-    # Warn(f"CanonicalizeUri returning: {localUri}")
-    return localUri
+    Warn(f"CanonicalizeUri returning 260: {localUri}")
+    return str(localUri)
 
 ########## ReadFile ############
 def ReadFile(filename):
@@ -925,18 +931,21 @@ def FileNodeRunUpdater(nm, thisUri, updater, state, thisInputs, thisParameters,
     # TODO: Move this warning to when the metadata is loaded?
     if not IsExecutable(updater) :
         Die(f"ERROR: {thisUri} updater {updater} is not executable by web server!")
-    Die(f"**** FileNodeRunUpdater STOPPED HERE ****")
-
-commentOut = '''
     # The FileNode updater args are local filenames for all
     # inputs and parameters.
-    my $inputFiles = join(" ", map {quotemeta($_)} 
-        @{$nm->{list}->{$thisUri}->{inputCaches}});
-    &Warn("inputFiles: $inputFiles\n", $DEBUG_DETAILS);
-    my $parameterFiles = join(" ", map {quotemeta($_)} 
-        @{$nm->{list}->{$thisUri}->{parameterCaches}});
-    &Warn("parameterFiles: $parameterFiles\n", $DEBUG_DETAILS);
-    my $ipFiles = "$inputFiles $parameterFiles";
+    # my $inputFiles = join(" ", map {quotemeta($_)} 
+    #   @{$nm->{list}->{$thisUri}->{inputCaches}});
+    inputFiles = " ".join([re.escape(f) for f in 
+            nm['list'].get(thisUri,{}).get('inputCaches',[])])
+    Warn(f"inputFiles: {inputFiles}\n", DEBUG_DETAILS)
+    # my $parameterFiles = join(" ", map {quotemeta($_)} 
+    #    @{$nm->{list}->{$thisUri}->{parameterCaches}});
+    parameterFiles = " ".join([re.escape(f) for f in 
+            nm['list'].get(thisUri,{}).get('parameterCaches',[])])
+    Warn(f"parameterFiles: {parameterFiles}\n", DEBUG_DETAILS)
+    ipFiles = f"{inputFiles} {parameterFiles}";
+    Die(f"**** FileNodeRunUpdater STOPPED HERE ****")
+commentOut = '''
     #### TODO: Move this code out of this function and pass $latestQuery
     #### as a parameter to FileNodeRunUpdater.
     #### TODO QUERY:
@@ -1572,15 +1581,15 @@ def LogDeltaTimingData(function, thisUri, startTime, flush):
     return
 
 ########## ISO8601 ############
-# Convert the given epoch time (in nanoseconds) to ISO8601 format 
+# Convert the given epoch time (in floating point seconds) to ISO8601 format 
 # in UTC timezone.  Example: 2021-07-26T02:04:16
-def ISO8601(time):
-    Warn(f"ISO8601 STOPPED HERE!")
-    stoppedHere = '''
-    my $dt = DateTime->from_epoch(epoch => $time, time_zone => 'UTC')
-    return $dt->iso8601
-    '''
-    return ""
+# TODO: The timestamp should probably have a "Z" at the end,
+# to indicate UTC timezone.
+def ISO8601(timeSec):
+    withFractionalSeconds = datetime.datetime.fromtimestamp(timeSec).isoformat()
+    # '2021-07-30T21:28:11.048079' --> '2021-07-30T21:28:11'
+    noFractional = withFractionalSeconds[0:len('2021-07-30T21:28:11')]
+    return noFractional
 
 ########## LogTimingData ############
 # *** Normally &LogDeltaTimingData is called instead of this function. ***
@@ -1590,37 +1599,41 @@ def ISO8601(time):
 # Where $flush is a boolean indicating whether the file buffer
 # should be flushed.
 def LogTimingData(timestamp, function, thisUri, seconds, flush):
-    Warn(f"LogTimingData STOPPED HERE!")
-    stoppedHere = '''
     if not timingLogFile: return 
     global timingLogFileIsOpen
     global timingLogFH
     global timingLogExists
     if not timingLogFileIsOpen :
-            # $timingLogExists ||= (-e $timingLogFile && -s $timingLogFile);
-            timingLogExists = 1 if os.exists(timingLogFile) and os.stat(timingLogFile).st_size
-            # open($timingLogFH, ">>$timingLogFile") || die "[ERROR] Failed to open timingLogFile: $timingLogFile\n";
-            timeingLogFH = open(timingLogFile, 'a')
-            timingLogFileIsOpen = 1
-            if not timingLogExists :
-                    timingLogFH.write(f"Timestamp\tFunction\tHost\tNode\tSeconds\n")
-                    timingLogExists = 1
+        # TODO: Maybe check every time whether $timingLogFile exists,
+        # in case it is cleared out while the pipeline is running,
+        # instead of assuming that it exists if we checked before.
+        # $timingLogExists ||= (-e $timingLogFile && -s $timingLogFile);
+        if os.path.exists(timingLogFile) and os.stat(timingLogFile).st_size :
+            timingLogExists = 1 
+        Warn(f"LogTimingData opening timingLogFile: {timingLogFile}")
+        timingLogFH = open(timingLogFile, 'a')
+        timingLogFileIsOpen = 1
+        if not timingLogExists :
+            Warn(f"LogTimingData writing header")
+            timingLogFH.write(f"Timestamp\tFunction\tHost\tNode\tSeconds\n")
+            timingLogExists = 1
     # ISO8601 timestamp
-    my $isoTS = &ISO8601($timestamp);
-    my $s = sprintf("%8.6f", $seconds);
-    $thisUri =~ m|\/node\/| or die;
-    my $host = $`;
-    my $node = $';
-    $host =~ s|^http(s?):\/\/||;
-    print $timingLogFH "$isoTS\t$function\t$host\t$node\t$s\n";
-    if ($flush) {
-            close $timingLogFH || die;
-            $timingLogFileIsOpen = 0;
-            }
-    return;
-    }
-    '''
+    isoTS = ISO8601(timestamp)
+    s = f"{seconds:8.6f}"
+    m = re.match(r'http(s?):\/\/([^\/]+)\/node\/(.+)$', thisUri)
+    m or Die()
+    host = m.group(2)
+    node = m.group(3)
+    Warn(f"LogTimingData writing data")
+    timingLogFH.write(f"{isoTS}\t{function}\t{host}\t{node}\t{s}\n")
+    if flush :
+        timingLogFH.close()
+        timingLogFileIsOpen = 0
     return
+
+    Warn(f"LogTimingData STOPPED HERE!")
+    stoppedHere = '''
+    '''
 
 ################### HandleHttpEvent ##################
 # Parameters:
@@ -1909,6 +1922,7 @@ app = Flask(__name__)
 # defining a route
 @app.route("/node/<nodeOrFile>", methods=['GET', 'POST', 'PUT']) # decorator
 def home(nodeOrFile): # route handler function
+    Warn(f"home $SERVER_PORT={SERVER_PORT}")
     Warn(f"home({nodeOrFile}) basePath: {basePath} request.path: " + str(request.path))
     # returning a response
     # return render_template('index.html', name = 'John')
