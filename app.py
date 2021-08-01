@@ -166,47 +166,6 @@ def IsCurrentWebServer(host, port=None):
     # Warn(f"IsCurrentWebServer non-local IP -- returning False 2")
     return False
 
-def OLD_IsCurrentWebServer(host, port=None):
-    # This version is OBSOLETE.  It wrongly checks *all* IP addresses
-    # of the current server, instead of only checking the one that
-    # we are running on.
-    #
-    # First compare the ports.  If the ports differ then its a different
-    # web server.
-    # Default them to '' for easier comparison:
-    p = '' if port is None else port
-    sp = '' if SERVER_PORT is None else SERVER_PORT
-    if p != sp :
-        # Warn(f"IsCurrentWebServer SERVER_PORT={sp} port={p}")
-        # Warn(f"IsCurrentWebServer SERVER_PORT != port; returning False")
-        return False
-    # Now compare the hostname.  This is more complex because we need
-    # to consider aliases that go to the same IP address.  We used to
-    # also consider multiple IP addresses for this server, but I think
-    # that was wrong, since I think the server only listens on one
-    # IP address.
-    try:
-        #### TODO: is there an IPv6 localhost convention that also needs to be checked?
-        ip = socket.gethostbyname(host)
-        localIps = LocalIps()
-        if not (ip in localIps) :
-            # Warn(f"IsCurrentWebServer non-local IP -- returning False 2")
-            return False
-    except OSError as error:
-        # As a sanity check, make sure we can get the localhost IP.
-        # If not, re-throw the original exception because we cannot run:
-        try:
-            localhostIp = socket.gethostbyname('localhost')
-        except OSError:
-            raise error
-        # Inability to resolve a given host is non-fatal.  We consider
-        # the host non-local:
-        # Warn(f"IsCurrentWebServer returning False 3")
-        return False
-    # IP is local.
-    # Warn(f"IsCurrentWebServer host is local; returning True")
-    return True
-
 ################ CanonicalizeUri #################
 # Canonicalize the given URI:  If it is an absolute local http URI,
 # then canonicalize it to $SERVER_NAME localhost or 127.0.0.1 .
@@ -482,6 +441,7 @@ tmpDir = basePath + "/tmp"
 URI = 'URI'
 FILE = 'FILE'
 
+# These query parameters are used by the RDF Pipeline Framework:
 systemArgs = ['debug', 'debugStackDepth', 'callerUri', 'callerLM', 'method']
 
 Warn(f'Starting with debug: {debug}\n')
@@ -738,29 +698,6 @@ def FormatTime(timeSec, decimalPlaces=lmDecimalPlaces):
         Die(f"FormatTime: Wrong number of digits in LM time: '{lmt}'")
     return lmt
 
-########## OLDFormatTime ############
-# Truncate nanoseconds time into microseconds time 
-# and turn it into a string.
-# (This differs from the perl version, which expects
-# a floating point time in seconds.)
-# The string is padded with leading zeros for easy string comparison,
-# ensuring that $a lt $b iff $a < $b.
-# An empty string "" will be returned if the time is 0.
-def OLDFormatTime(timeNs, decimalPlaces=lmDecimalPlaces):
-    if not timeNs or timeNs == 0 :
-        return ""
-    # Enough digits to work through year 2286:
-    # my $lmt = sprintf("%010.6f", $time);
-    # Nanoseconds are 9 decimal places:
-    lmtNoDP = f"{timeNs:0{lmSecondsWidth+9}d}"
-    if decimalPlaces > lmDecimalPlaces :
-        lmtNoDP += "0" * (decimalPlaces-lmDecimalPlaces);
-    lmt = lmtNoDP[0:lmSecondsWidth]+"."+lmtNoDP[lmSecondsWidth:lmSecondsWidth+decimalPlaces]
-    # length($lmt) == 10+1+6 or confess "Too many digits in time!";
-    if len(lmt) != lmSecondsWidth+1+decimalPlaces :
-        Die(f"FormatTime: Wrong number of digits in LM time: '{lmt}'")
-    return lmt
-
 ########## FormatCounter ############
 # Format a counter for use in an LM string.
 # The counter becomes the lowest order digits.
@@ -795,23 +732,6 @@ def TimeToLM(timeSec, counter):
     if counter is None :
         return FormatTime(timeSec, lmDecimalPlaces+lmCounterWidth)
     return FormatTime(timeSec) + FormatCounter(counter)
-
-########## OLDTimeToLM ############
-# Turn an int nanosecond time (and optional counter) into an LM string,
-# for use in headers, etc.  The counter becomes the lowest order digits.
-# The string is padded with leading zeros for easy string comparison,
-# ensuring that $a lt $b iff $a < $b.
-# An empty string "" will be returned if the timeNs is 0.
-# As generated, these are monotonic.  But in general the system does
-# not require LMs to be monotonic, because they could be checksums.
-# The only guarantee that the system requires is that they change
-# if a node output has changed.
-def OLDTimeToLM(timeNs, counter):
-    if not timeNs :
-        return "" 
-    if counter is None :
-        counter = 0
-    return FormatTime(timeNs) + FormatCounter(counter)
 
 ############# TestLmGenerator ##############
 def TestLmGenerator(n):
@@ -856,44 +776,6 @@ def GenerateNewLM(oldLm):
             oldCounter = int(oldCounterString)
     counterString = FormatCounter(oldCounter+1)
     lm = tSecString + counterString
-    if len(lm) != lmSecondsDPWidth+lmCounterWidth :
-        Die(f"GenerateNewLM: Internal error in generating lm: '{lm}'")
-    return lm
-
-############# OLDGenerateNewLM ##############
-# Generate a new LM, based on the current time, that is guaranteed unique
-# on this server even if this function is called faster than the 
-# clock resolution.  Within the same thread
-# it is guaranteed to increase monotonically (assuming the 
-# clock increases monotonically).  This is done by
-# appending a counter to the lower order digits of the current time.
-# Even if the clock is not monotonic, it will still generate a different
-# LM from the given oldLm, by incrementing the counter if the
-# time is otherwise the same.
-#
-# Example LM: 0123456789.123456000001
-#             |        | |    ||    |
-#             + seconds+ + μs ++ counter
-#
-def OLDGenerateNewLM(oldLm):
-    oldTimeMs = 0
-    oldCounter = -1     # Will be incremented before use 
-    tNs = time.time_ns()
-    tMsString = FormatTime(tNs)     
-    # tMsString looks like: "0123456789.123456" (i.e., no counter)
-    if oldLm :
-        # oldLm looks like: "0123456789.123456000001"
-        if len(oldLm) != lmSecondsDPWidth+lmCounterWidth :
-            Die(f"GenerateNewLM: corrupt oldLm: '{oldLm}'")
-        # Extract the old ms time as string, i.e., chop off the counter.
-        # oldMsString will look like: "0123456789.123456"
-        oldMsString = oldLm[0 : lmSecondsDPWidth]
-        # Still the same time?   If so, grab the old counter.
-        if tMsString == oldMsString :
-            oldCounterString = oldLm[lmSecondsDPWidth : ]
-            oldCounter = int(oldCounterString)
-    counterString = FormatCounter(oldCounter+1)
-    lm = tMsString + counterString
     if len(lm) != lmSecondsDPWidth+lmCounterWidth :
         Die(f"GenerateNewLM: Internal error in generating lm: '{lm}'")
     return lm
@@ -1008,7 +890,6 @@ commentOut = '''
     return $newLM;
     }
 
-    *** STOPPED HERE ***
 '''
 
 ############# FileNodeRunParametersFilter ##############
@@ -1576,7 +1457,7 @@ def LoadNodeMetadata(nm, ontFile, internalsFile, configFile):
 def LogDeltaTimingData(function, thisUri, startTime, flush):
     if not timingLogFile: return 
     # my $endTime = Time::HiRes::time();
-    endTime = time.time_ns()
+    endTime = time.time()
     LogTimingData(endTime, function, thisUri, endTime - startTime, flush)
     return
 
@@ -1635,6 +1516,56 @@ def LogTimingData(timestamp, function, thisUri, seconds, flush):
     stoppedHere = '''
     '''
 
+##################### FilterArgs ######################
+# Remove RDF Pipeline internal args from query parameter args.
+def FilterArgs(pargs, toRemove):
+    result = {k:pargs[k] for k in pargs if k not in toRemove}
+    return result
+
+################### BuildQueryString #################
+# Given a hash of key/value pairs, escape both keys and values and
+# put them into a query string (not including the "?"), which is returned.
+# The opposite of ParseQueryString.
+# We cannot use urllib.parse.urlencode because that function does not
+# sort the keys.  We sort them to be deterministic, for regression
+# test comparisons.
+def BuildQueryString(args):
+    # From http://www.ietf.org/rfc/rfc3986.txt
+    # query         = *( pchar / "/" / "?" )
+    # pchar         = unreserved / pct-encoded / sub-delims / ":" / "@"
+    # unreserved    = ALPHA / DIGIT / "-" / "." / "_" / "~"
+    # sub-delims    = "!" / "$" / "&" / "'" / "(" / ")"
+    #                / "*" / "+" / "," / ";" / "="
+    #
+    # URI::Escape's default $cRange: "^A-Za-z0-9\-\._~"
+    # but we want to allow more characters in the query strings if they
+    # are not harmful
+    # my $cRange = "^A-Za-z0-9" . quotemeta('-._~!$()+,;');
+    # Don't allow so many unescaped characters:
+    # my $cRange = "^A-Za-z0-9" . quotemeta('-._~(),');
+    safe = '-._~(),'
+    pairs = [ urllib.parse.quote(k, safe=safe)
+        +"="+urllib.parse.quote(args[k], safe=safe)
+        for k in sorted(args.keys()) ]
+    qs = "&".join(pairs)
+    return qs
+
+################### ParseQueryString #################
+# Returns a hash of key/value pairs, with both keys and values unescaped.
+# If the same key appears more than once in the query string,
+# the last value given wins.
+# The opposite of BuildQueryString.
+# Note that this does NOT return a MultiDict.  If the same key appears
+# more than once, only the first of its values will be retained.
+# TODO: Not sure this function is needed.  Maybe $r->param can be used
+# instead?  See:
+# https://metacpan.org/module/Apache2::Request#param
+def ParseQueryString(qs):
+    if qs is None : qs = ''
+    argsList = urllib.parse.parse_qs(qs, keep_blank_values=True, strict_parsing=True)
+    args = { k: argsList[k][0] for k in argsList.keys() }
+    return args
+
 ################### HandleHttpEvent ##################
 # Parameters:
 # my ($nm, $r, $thisUri, %args) = @_;
@@ -1648,21 +1579,25 @@ def HandleHttpEvent(nm, r, thisUri, args):
     ret = "Dummy HandleHttpEvent Result"
     return ret
     stoppedHere = '''
-    my $startTime = Time::HiRes::time();
-    my $thisVHash = $nm->{value}->{$thisUri} || {};
-    my $thisType = $thisVHash->{nodeType} || "";
-    if (!$thisType) {
-            &Warn("INTERNAL ERROR: HandleHttpEvent called, but $thisUri has no nodeType.\n");
-            return Apache2::Const::SERVER_ERROR;
-            }
-    my $callerUri = $args{callerUri} || "";
-    my $callerLM = $args{callerLM} || "";
-    my $method = $args{method} || $r->method;
-    return Apache2::Const::HTTP_METHOD_NOT_ALLOWED
-      if $method ne "HEAD" && $method ne "GET" && $method ne "GRAB"
-            && $method ne "NOTIFY";
+    # my $startTime = Time::HiRes::time();
+    startTime = time.time()
+    thisVHash = nm['value'].get(thisUri, {})
+    thisType = thisVHash.get('nodeType', "")
+    if not thisType :
+            Warn(f"INTERNAL ERROR: HandleHttpEvent called, but {thisUri} has no nodeType.\n")
+            # return Apache2::Const::SERVER_ERROR;
+            return Response(f"501 (Server error)\n"
+                + f"INTERNAL ERROR: HandleHttpEvent called, but {thisUri} has no nodeType.\n", 
+                    status=501, mimetype='text/plain')
+    callerUri = args.get('callerUri', "")
+    callerLM = args.get('callerLM', "")
+    method = args.get('method',  r.method)
+    if method != "HEAD" and method != "GET" and method != "GRAB"
+            and method != "NOTIFY" :
+        # return Apache2::Const::HTTP_METHOD_NOT_ALLOWED
+        return Response("405 (Method not allowed)", status=405, mimetype='text/plain')
     #### TODO QUERY: Update this node's query strings:
-    %args = &FilterArgs(\%args, @systemArgs);
+    args = FilterArgs(args, systemArgs)
     my $query = &BuildQueryString(%args);
     &Warn("HandleHttpEvent query: $query\n", $DEBUG_DETAILS);
     &UpdateQueries($nm, $thisUri, $callerUri, $query)
@@ -1856,7 +1791,7 @@ def RealHandler(r, thisUri, args):
     # if ($r->uri() eq "/node/updaters") {
     if r.path == "/node/updaters" :
         # my $startTime = Time::HiRes::time();
-        startTime = time.time_ns()
+        startTime = time.time()
         updatersUri = "https://github.com/rdf-pipeline/framework/tree/master/tools/updaters"
         LogDeltaTimingData("HandleHttpEvent", thisUri, startTime, 1)
         # $r->headers_out->set('Location' => $updatersUri); 
